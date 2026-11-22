@@ -79,7 +79,7 @@ func TestQCOR02ExplicitReconnectRequiresOwnerAction(t *testing.T) {
 					generation, bindFrame.Header.Command)
 				return
 			}
-			bind, decodeErr := wire.DecodeBindRequest(bindFrame)
+			bind, decodeErr := wire.DecodeBindRequestV2(bindFrame)
 			if decodeErr != nil {
 				_ = conn.Close()
 				peerDone <- fmt.Errorf("generation %d decode Bind: %w", generation, decodeErr)
@@ -202,7 +202,12 @@ func TestQCOR02ExplicitReconnectRequiresOwnerAction(t *testing.T) {
 	var previous *Session
 	for generation := 1; generation <= generations; generation++ {
 		if err := client.Connect(ctx); err != nil {
-			t.Fatalf("generation %d Connect: %v", generation, err)
+			select {
+			case peerErr := <-peerDone:
+				t.Fatalf("generation %d Connect: %v (peer: %v)", generation, err, peerErr)
+			case <-time.After(100 * time.Millisecond):
+				t.Fatalf("generation %d Connect: %v", generation, err)
+			}
 		}
 		session, ok := client.CurrentSession()
 		if !ok {
