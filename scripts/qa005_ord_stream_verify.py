@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 import re
 
+from qa005_ord_json import loads as strict_json_loads
+
 ROW = re.compile(rb"^(Benchmark\S+)\s+([0-9]+)(?:\s|$)")
 
 
@@ -56,7 +58,7 @@ def verify_stream(raw_log, sidecar, pre_spawn_ns, process_exit_ns,
     if not isinstance(expected_cases, set) or not expected_cases:
         raise ValueError("Expected benchmark case IDs required")
     raw = raw_log.read_bytes()
-    events = [json.loads(line) for line in
+    events = [strict_json_loads(line) for line in
               sidecar.read_text(encoding="utf-8").splitlines()]
     originals = list(raw_lines(raw))
     if len(events) != len(originals):
