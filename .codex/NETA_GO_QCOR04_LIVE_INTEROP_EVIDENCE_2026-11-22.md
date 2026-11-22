@@ -3,7 +3,8 @@
 **Date:** 2026-11-22  
 **Candidate branch:** `qual/q-cor04-live-fault-harness-2026-11-22`  
 **Production source baseline:** protected `main` `d376cd8a375328aa971cd4441d989920bf6009a0`  
-**Harness-only candidate SHA:** `18b69ed2c934f75c6c2461ed6d6c3cb32b65de57`  
+**Initial harness-only candidate SHA:** `18b69ed2c934f75c6c2461ed6d6c3cb32b65de57`  
+**Consolidated candidate tested SHA:** `63cbb9f41c76090d5fd32452e3fe48dafdfd223e`  
 **Disposition:** Q-COR-04 correctness acceptance CLOSED on unchanged production source; no performance qualification implied.
 
 ## Harness
@@ -27,12 +28,12 @@ The fault cases use the deterministic Go raw TCP peer; they are not represented 
 
 ## Exact validation
 
-[Pinex candidate workflow run 45025742813](https://github.com/majiddarvishan/pinex/actions/runs/45025742813) — **overall SUCCESS**.
+[Pinex candidate workflow run 45025742813](https://github.com/majiddarvishan/pinex/actions/runs/45025742813) and [consolidated-candidate run 45026010703](https://github.com/majiddarvishan/pinex/actions/runs/45026010703) — **both overall SUCCESS**.
 
 - Pinned C++ source: `f7bd1eb779baff0d10e624f20522df345e6ee747` (Pinex 1.5.0).
 - C++ peer binary SHA-256: `63dd13eaca9430bda0de3bcfc1302f89cf2f2af51d6e9543d3e4ffb49ca8d38e`.
 - Go toolchain: `go1.23.12 linux/amd64`.
-- Candidate neta-go harness SHA: `18b69ed2c934f75c6c2461ed6d6c3cb32b65de57`.
+- Candidate neta-go harness SHAs: initial `18b69ed2c934f75c6c2461ed6d6c3cb32b65de57`; consolidated candidate `63cbb9f41c76090d5fd32452e3fe48dafdfd223e` (same harness source, docs-only changes afterward).
 - Four stages PASS: C++ golden build, byte-for-byte golden comparison, live interop + fault tests, and the same test set under `-race`.
 - Seven selected tests PASS:
   `TestLegacyNetaCPPClientConfigUsesV1`,
