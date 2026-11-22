@@ -98,7 +98,7 @@ def run(args):
     try:
         metadata = strict_json_loads(environment_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError) as exc:
-        raise ValueError("Missing or invalid environment evidence") from exc
+        raise ValueError("Missing or invalid environment evidence: " + str(exc)) from exc
     required = ("source_sha", "scenario_mode", "harness_sha256",
                 "workload_config", "go_version")
     if not isinstance(metadata, dict) or any(
