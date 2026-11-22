@@ -534,28 +534,21 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
     production_float_path = _fit_one_float_path_enclosure(
         y, order, t_intervals, margin, joint_corner_critical
     )
-    if not production_float_path["complete"]:
-        return {
-            "method": (
-                "outward-rounded interval arithmetic plus production fit_one "
-                "binary64 operation enclosure"
-            ),
-            "continuous_interval_enclosure_complete": False,
-            "continuous_interval_bound_proved": False,
-            "reason": production_float_path["reason"],
-            "production_fit_one_float_path_enclosure": production_float_path,
-            "normalized_case_time_intervals": [list(value) for value in t_intervals],
-            "residualized_time_sum_squares_interval": list(sst),
-            "fit_one_pivot_tolerance": fit_one_pivot_tolerance,
-            "qualification": "DRIFT-INCONCLUSIVE",
-        }
-
+    production_float_complete = production_float_path["complete"]
+    production_corner_envelopes = (
+        production_float_path["joint_5m_corner_ci_envelope"]
+        if production_float_complete else corner_envelopes
+    )
+    production_all_inside = (
+        production_float_path["all_corner_ci_envelopes_inside_fixed_bounds"]
+        if production_float_complete else None
+    )
     return {
         "method": (
             "outward-rounded independent normalized-time box, balanced-order "
             "OLS closed form, and production fit_one binary64 operation enclosure"
         ),
-        "continuous_interval_enclosure_complete": True,
+        "continuous_interval_enclosure_complete": production_float_complete,
         # Keep this false pending independent review of equivalence to the
         # production fit_one floating-point implementation.
         "continuous_interval_bound_proved": False,
@@ -569,12 +562,18 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         "closed_form_joint_5m_corner_ci_envelope": corner_envelopes,
         "production_fit_one_float_path_enclosure": production_float_path,
         "production_fit_one_time_coefficient_interval": production_float_path["time_coefficient_interval"],
-        "joint_5m_corner_ci_envelope": production_float_path["joint_5m_corner_ci_envelope"],
+        "joint_5m_corner_ci_envelope": production_corner_envelopes,
+        "joint_5m_corner_ci_envelope_source": (
+            "production_fit_one_float_path" if production_float_complete
+            else "closed_form_only_float_path_inconclusive"
+        ),
         "fixed_margin_log": log_limit,
-        "all_corner_ci_envelopes_inside_fixed_bounds": production_float_path["all_corner_ci_envelopes_inside_fixed_bounds"],
+        "closed_form_all_corner_ci_envelopes_inside_fixed_bounds": all_inside,
+        "all_corner_ci_envelopes_inside_fixed_bounds": production_all_inside,
         "continuous_interval_bound_status": (
-            "ENCLOSURE_WITHIN_FIXED_BOUNDS_UNPROVEN"
-            if production_float_path["all_corner_ci_envelopes_inside_fixed_bounds"]
+            "INCONCLUSIVE_PRODUCTION_FLOAT_PATH" if not production_float_complete
+            else "ENCLOSURE_WITHIN_FIXED_BOUNDS_UNPROVEN"
+            if production_all_inside
             else "ENCLOSURE_EXPOSES_OUT_OF_BOUND_POSSIBILITY"
         ),
         "qualification": "DRIFT-INCONCLUSIVE",
