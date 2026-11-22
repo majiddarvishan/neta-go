@@ -7,7 +7,10 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 from qa005_ord_drift import cached_student_t_critical, fit_one
-from qa005_ord_time_interval_bound import continuous_interval_enclosure
+from qa005_ord_time_interval_bound import (
+    _case_time_scaled_intervals,
+    continuous_interval_enclosure,
+)
 
 
 ORDER = [1 if i % 2 == 0 else -1 for i in range(10)]
@@ -106,6 +109,68 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         self.assertFalse(result["continuous_interval_bound_proved"])
         self.assertIn("sum-of-squares lower bound is nonpositive", result["reason"])
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
+
+    def test_near_singular_box_respects_production_fit_one_pivot_threshold(self):
+        epsilon = 5e-7
+        normalized = (
+            [-1 + index * epsilon for index in range(5)] +
+            [1 - (9 - index) * epsilon for index in range(5, 10)]
+        )
+        raw_times = [
+            1_000_000_000 + round((value + 1) * 500_000_000)
+            for value in normalized
+        ]
+        intervals = [
+            {
+                "pair": index + 1,
+                "lower_pair_midpoint_twice_ns": 2 * value,
+                "upper_pair_midpoint_twice_ns": 2 * value,
+            }
+            for index, value in enumerate(raw_times)
+        ]
+        result = continuous_interval_enclosure(
+            [0.0] * 10, [1] * 5 + [-1] * 5, intervals, .05, CRITICAL
+        )
+        self.assertFalse(result["continuous_interval_enclosure_complete"])
+        self.assertIn("production fit_one pivot tolerance", result["reason"])
+        lower, upper = result["residualized_time_sum_squares_interval"]
+        self.assertGreater(lower, 0)
+        self.assertLessEqual(lower, result["fit_one_pivot_tolerance"])
+        self.assertEqual(result["fit_one_pivot_tolerance"], 1e-11)
+        with self.assertRaisesRegex(ValueError, "numerically singular"):
+            fit_one([0.0] * 10, [1] * 5 + [-1] * 5,
+                    [2.0 * (value - raw_times[0]) /
+                     (raw_times[-1] - raw_times[0]) - 1.0
+                     for value in raw_times], .05, FAMILY_SIZE)
+
+    def test_large_integer_time_normalization_encloses_python_float_operations(self):
+        base = 1 << 60
+        span = 1 << 54
+        step = span // 9
+        width = 1 << 20
+        pair_intervals = [
+            {
+                "pair": index + 1,
+                "lower_pair_midpoint_twice_ns": 2 * (base + index * step),
+                "upper_pair_midpoint_twice_ns": 2 * (base + index * step + width),
+            }
+            for index in range(10)
+        ]
+        enclosed = _case_time_scaled_intervals(pair_intervals)
+        for mask in range(1 << 10):
+            raw = [
+                item["upper_pair_midpoint_twice_ns"] // 2
+                if mask & (1 << index)
+                else item["lower_pair_midpoint_twice_ns"] // 2
+                for index, item in enumerate(pair_intervals)
+            ]
+            actual = [
+                2.0 * (value - raw[0]) / (raw[-1] - raw[0]) - 1.0
+                for value in raw
+            ]
+            for index, value in enumerate(actual):
+                self.assertLessEqual(enclosed[index][0], value)
+                self.assertGreaterEqual(enclosed[index][1], value)
 
     def test_out_of_bound_corner_envelope_is_not_hidden(self):
         result = continuous_interval_enclosure(
