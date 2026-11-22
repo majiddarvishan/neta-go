@@ -25,6 +25,7 @@ from qa005_ord_time_uncertainty import (
 from qa005_ord_telemetry_verify import verify_process_trace
 from qa005_ord_time_interval_bound import continuous_interval_enclosure
 from qa005_ord_stream_verify import verify_stream
+from qa005_ord_json import loads as strict_json_loads
 from qa005_ord_stream_capture import CHUNK_BYTES, MAX_LINE_BYTES
 
 METRICS = ("throughput_ops_s", "p50_ns", "p95_ns", "p99_ns",
@@ -184,7 +185,7 @@ def validated_inputs(root, mode):
     observed_kernel = None
     for side in ("baseline", "candidate"):
         path = root / side / "environment.json"
-        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta = strict_json_loads(path.read_text(encoding="utf-8"))
         if meta.get("scenario_mode") != mode:
             raise ValueError("Environment Mode mismatch")
         for name in ("source_sha", "go_version", "harness_sha256",
@@ -209,7 +210,7 @@ def validated_inputs(root, mode):
             trace_file = evidence / (stem + ".jsonl")
             line_events_file = evidence / (stem + ".lines.jsonl")
             log_file = root / side / ("%02d.log" % pair)
-            record = json.loads(record_file.read_text(encoding="utf-8"))
+            record = strict_json_loads(record_file.read_text(encoding="utf-8"))
             if (record.get("mode") != mode or type(record.get("pair")) is not int or
                     record.get("pair") != pair or
                     record.get("side") != side or record.get("source_sha") != env[side][0]["source_sha"] or
@@ -218,6 +219,8 @@ def validated_inputs(root, mode):
                     record.get("workload_config") != env[side][0]["workload_config"] or
                     record.get("environment_sha256") != env[side][1] or
                     record.get("collector_sha256") != collector_digest or
+                    record.get("strict_json_sha256") != digest(
+                        Path(__file__).with_name("qa005_ord_json.py")) or
                     record.get("observer_script_sha256") != digest(
                         Path(__file__).with_name("qa005_ord_stream_capture.py")) or
                     record.get("line_events_sha256") != digest(line_events_file) or
@@ -226,7 +229,7 @@ def validated_inputs(root, mode):
                     record.get("complete") is not True or
                     type(record.get("exit_code")) is not int or record.get("exit_code") != 0):
                 raise ValueError("Corrupt/mismatched run provenance: " + stem)
-            samples = [json.loads(line) for line in
+            samples = [strict_json_loads(line) for line in
                        trace_file.read_text(encoding="utf-8").splitlines()]
             trace_info = verify_process_trace(record, samples)
             sampling_interval_ms = trace_info["sampling_interval_ms"]
@@ -502,7 +505,7 @@ def analyze(root, mode):
             report["reasons"].append(
                 "One or more required host sensor values were unavailable; E-UNKNOWN."
             )
-        comparison = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
+        comparison = strict_json_loads((root / "comparison.json").read_text(encoding="utf-8"))
         if comparison.get("matrix_complete") is not True:
             report["reasons"].append("Independent comparator matrix not complete")
         report["existing_regression_status"] = comparison.get("relative_status", "INCONCLUSIVE")
