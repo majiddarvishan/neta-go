@@ -561,7 +561,7 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         "maximum_corner_standard_error_upper": max(standard_error_uppers),
         "closed_form_joint_5m_corner_ci_envelope": corner_envelopes,
         "production_fit_one_float_path_enclosure": production_float_path,
-        "production_fit_one_time_coefficient_interval": production_float_path["time_coefficient_interval"],
+        "production_fit_one_time_coefficient_interval": production_float_path.get("time_coefficient_interval"),
         "joint_5m_corner_ci_envelope": production_corner_envelopes,
         "joint_5m_corner_ci_envelope_source": (
             "production_fit_one_float_path" if production_float_complete
