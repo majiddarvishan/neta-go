@@ -29,6 +29,12 @@ New tests exercise Boolean/float spoofing, malformed clocks, sample-kind substit
 
 These are data-integrity tests only. They do not demonstrate that the sensor paths exist on a Reference Host, that the observed sampling cadence is adequate, that the host is E-VALID, or that the observer is low-overhead.
 
+## 2026-11-22 strict JSON extension
+
+The evidence path now uses `scripts/qa005_ord_json.py` for environment manifests, process records, telemetry snapshots, comparison metadata and line-observer sidecars. Duplicate keys at any object depth and non-standard `NaN`/infinity constants are rejected. The collector records `strict_json_sha256`, and the analyzer verifies it. Synthetic tests cover duplicate environment/process/sidecar keys and collector refusal before child spawn. See [strict JSON note](NETA_GO_ORD_JSON_STRICTNESS_2026-11-22.md).
+
+This hardens evidence interpretation only; it does not authenticate evidence, qualify host sensors, or change the mandatory `DRIFT-INCONCLUSIVE` disposition.
+
 ## Qualification boundary and remaining work
 
 - `environment_validity` remains `E-UNKNOWN` until the approved host-admission and A/A evidence requirements are met.
