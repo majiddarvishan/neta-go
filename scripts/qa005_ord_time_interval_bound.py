@@ -552,6 +552,7 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         # Keep this false pending independent review of equivalence to the
         # production fit_one floating-point implementation.
         "continuous_interval_bound_proved": False,
+        "production_float_path_reason": production_float_path.get("reason"),
         "case_time_precision_proved": False,
         "normalized_case_time_intervals": [list(value) for value in t_intervals],
         "residualized_time_sum_squares_interval": list(sst),
