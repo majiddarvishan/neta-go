@@ -1,0 +1,74 @@
+name: Phase Q — MEM-004/005 synthetic ownership and sampling checks
+
+# Deterministic test-only overlay checks. This does not run the benchmark matrix,
+# reference-host A/A, long soak, or enable the Performance Gate.
+on:
+  push:
+    branches: [qual/mem004-retired-callback-guard-2026-11-22, qual/phase-q-software-harnesses-2026-11-22]
+    paths:
+      - 'scripts/qa005_owned_buffers_overlay.py'
+      - 'scripts/test_qa005_owned_buffers_overlay.py'
+      - '.github/workflows/phase-q-mem004-synthetic.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/qa005_owned_buffers_overlay.py'
+      - 'scripts/test_qa005_owned_buffers_overlay.py'
+      - '.github/workflows/phase-q-mem004-synthetic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-ownership-sampling:
+    name: V19 retired-callback ownership and sampling integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from module toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Run anchored Python adapter tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest -v scripts/test_qa005_owned_buffers_overlay.py
+
+      - name: Generate V19 read-only overlay outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qa005-v19-artifacts"
+          python3 -B scripts/qa005_owned_buffers_overlay.py \
+            --source "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/qa005-v19-overlay" \
+            > "$RUNNER_TEMP/qa005-v19-artifacts/prepare.json"
+          cp "$RUNNER_TEMP/qa005-v19-overlay/manifest.json" "$RUNNER_TEMP/qa005-v19-artifacts/manifest.json"
+          cp "$RUNNER_TEMP/qa005-v19-overlay/overlay.json" "$RUNNER_TEMP/qa005-v19-artifacts/overlay.json"
+
+      - name: Run synthetic ownership and sampling lifecycle tests under race detector
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOMAXPROCS=2 go test \
+            -overlay "$RUNNER_TEMP/qa005-v19-overlay/overlay.json" \
+            -race -count=1 -timeout=10m \
+            -run '^TestQA005OwnedOverlay' . \
+            2>&1 | tee "$RUNNER_TEMP/qa005-v19-artifacts/go-test.log"
+
+      - name: Upload synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa005-mem004-mem005-v19-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa005-v19-artifacts/
+          if-no-files-found: warn
+          retention-days: 30

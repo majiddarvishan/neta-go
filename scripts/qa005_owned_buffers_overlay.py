@@ -18,7 +18,7 @@ spec = importlib.util.spec_from_file_location("qa005_charge_probe", ROOT / "qa00
 charge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(charge)
 
-ADAPTER_ID = "QA005-OWNED-BUFFER-OVERLAY-V18-UNQUALIFIED"
+ADAPTER_ID = "QA005-OWNED-BUFFER-OVERLAY-V19-UNQUALIFIED"
 SOURCE_FILES = ("benchmark_test.go", "session.go", "session_internal.go", "session_transport.go", "session_control.go", "resource_charges.go", "types.go", "server_lifecycle.go")
 FIXTURES = ("qa005_qualification_benchmark_test.go", "benchmark_test.go")
 
@@ -356,6 +356,27 @@ BENCHMARK_HELPERS = """
 // It excludes wake channel buffers, goroutine stacks, timers, runtime metadata,
 // allocator size-class rounding and user callback references. It must remain
 // a separate DIAGNOSTIC and cannot join independent memory peaks.
+func qa005RecordSamplingWindow(p *qa005ChargeProbe, started time.Time, duration time.Duration) bool {
+    if p == nil || started.IsZero() || duration < 0 {
+        if p != nil { p.invalid = true }
+        return false
+    }
+    if !p.ownedLastSampleAt.IsZero() {
+        gap := started.Sub(p.ownedLastSampleAt)
+        if gap <= 0 {
+            p.invalid = true
+            return false
+        }
+        if gap > p.ownedMaxSampleGap { p.ownedMaxSampleGap = gap }
+    }
+    p.ownedLastSampleAt = started
+    if duration > p.ownedMaxSnapshotDuration { p.ownedMaxSnapshotDuration = duration }
+    return true
+}
+
+// Sampling gaps are diagnostics only. This helper validates monotonic sample
+// starts and records snapshot duration; it deliberately has no acceptance
+// threshold or qualification PASS path.
 func qa005M1WorkerStructFootprint(count uint64) (uint64, bool) {
     size := uint64(unsafe.Sizeof(callbackWorker{}))
     if size == 0 || count > ^uint64(0)/size { return 0, false }
@@ -519,6 +540,33 @@ func qa005OwnedConsistentLocked(s *Session) bool {
     return summed == s.qa005OwnedTotal
 }
 
+// Check callback-dispatcher ownership without taking Session.mu under pool.mu.
+// A queue remains in pool.sessions while a callback is active or queued. If it
+// references a Session absent from the frozen owner set, that retired generation
+// is an untracked owner and the observation must fail closed.
+func qa005CallbackOwnerSessionsComplete(owner *ownerCallbackDispatcher, knownSessions map[*Session]struct{}, seenPools map[*callbackWorkerPool]struct{}) bool {
+    if owner == nil { return true }
+    pools := []*callbackWorkerPool{owner.application, owner.completion, owner.onClose}
+    for _, pool := range pools {
+        if pool == nil { continue }
+        if _, duplicate := seenPools[pool]; duplicate { continue }
+        seenPools[pool] = struct{}{}
+        pool.mu.Lock()
+        for session, queue := range pool.sessions {
+            if session == nil || queue == nil || queue.session != session {
+                pool.mu.Unlock()
+                return false
+            }
+            if _, known := knownSessions[session]; !known {
+                pool.mu.Unlock()
+                return false
+            }
+        }
+        pool.mu.Unlock()
+    }
+    return true
+}
+
 // Overlay-only snapshot: briefly lock Server list, then each Session separately.
 // The resulting global sample is NOT an atomic heap snapshot.
 // Overlay-only ownership set: Server lock is released before Session locks.
@@ -569,6 +617,21 @@ func qa005OwnedSessions(env *benchmarkEnv) []*Session {
             }
         }
     }
+    // The dispatcher's Session map is the only live owner registry for a
+    // retired generation whose callback is still queued/running. Do not retain
+    // those Sessions in the measurement registry: that would perturb GC
+    // liveness. If any such Session is absent from the initial owner snapshot,
+    // mark the whole window INCONCLUSIVE.
+    env.qa005OwnedCallbackRegistryValid = true
+    seenPools := make(map[*callbackWorkerPool]struct{})
+    if !qa005CallbackOwnerSessionsComplete(env.server.callbacks, seen, seenPools) {
+        env.qa005OwnedCallbackRegistryValid = false
+    }
+    for _, client := range env.clients {
+        if client != nil && !qa005CallbackOwnerSessionsComplete(client.callbacks, seen, seenPools) {
+            env.qa005OwnedCallbackRegistryValid = false
+        }
+    }
     return sessions
 }
 
@@ -589,7 +652,8 @@ func qa005ResetOwnedHighwaters(env *benchmarkEnv) {
 
 // A Session removed from the Server's current map may still own callback bodies.
 func qa005OwnedRegistryComplete(env *benchmarkEnv) bool {
-    if len(env.qa005OwnedRegistry) == 0 || !env.qa005OwnedClientRegistryValid {
+    if len(env.qa005OwnedRegistry) == 0 || !env.qa005OwnedClientRegistryValid ||
+        !env.qa005OwnedCallbackRegistryValid {
         return false
     }
     if len(env.qa005OwnedClientEpoch) != len(env.qa005OwnedClientIdentity) {
@@ -608,6 +672,17 @@ func qa005OwnedRegistryComplete(env *benchmarkEnv) bool {
             client.current == env.qa005OwnedClientIdentity[client]
         client.mu.Unlock()
         if !complete { return false }
+    }
+    // Recheck callback queues at every sample. A retired generation can
+    // enqueue/retain work after the initial freeze; never silently omit it.
+    seenPools := make(map[*callbackWorkerPool]struct{})
+    if !qa005CallbackOwnerSessionsComplete(env.server.callbacks, env.qa005OwnedIndex, seenPools) {
+        return false
+    }
+    for _, client := range env.clients {
+        if client == nil || !qa005CallbackOwnerSessionsComplete(client.callbacks, env.qa005OwnedIndex, seenPools) {
+            return false
+        }
     }
     env.server.mu.Lock()
     defer env.server.mu.Unlock()
@@ -1533,9 +1608,124 @@ func TestQA005OwnedOverlayClientRealReconnectInvalidatesWindow(t *testing.T) {
         t.Fatal("real reconnect yielded an old Session HWM upper")
     }
 }
+    
+// A retired Client generation can be absent from Client.current and the
+// benchmark's initial Session list while an active callback still owns it.
+// The observer must reject this window rather than report an incomplete zero.
+func TestQA005OwnedOverlayRetiredClientCallbackSessionFailsClosed(t *testing.T) {
+    retired := newSession(nil, defaultSessionConfig(), sessionIdentity{}, nil, sessionHandlers{})
+    pool := newCallbackWorkerPool(callbackApplication, 1, time.Hour)
+    pool.sessions[retired] = &callbackSessionQueue{session: retired, active: 1}
+    client := &Client{
+        generation: 11,
+        callbacks: &ownerCallbackDispatcher{application: pool},
+    }
+    env := &benchmarkEnv{
+        server: &Server{sessions: map[*Session]struct{}{}},
+        clients: []*Client{client},
+    }
+    qa005ResetOwnedHighwaters(env)
+    if env.qa005OwnedCallbackRegistryValid {
+        t.Fatal("retired callback Session missing from frozen owner set was accepted")
+    }
+    if qa005OwnedRegistryComplete(env) {
+        t.Fatal("retired callback Session yielded a complete registry")
+    }
+    if _, valid := qa005SampleOwnedBuffers(env); valid {
+        t.Fatal("retired callback Session was silently omitted from memory sample")
+    }
+    if _, valid := qa005OwnedPeakUpper(env); valid {
+        t.Fatal("retired callback Session was silently omitted from HWM upper")
+    }
+}
+
+// A callback queue for a Session already present in the frozen owner set is
+// allowed and must not duplicate that Session identity.
+func TestQA005OwnedOverlayLateRetiredCallbackSessionInvalidatesWindow(t *testing.T) {
+    known := newSession(nil, defaultSessionConfig(), sessionIdentity{}, nil, sessionHandlers{})
+    pool := newCallbackWorkerPool(callbackApplication, 1, time.Hour)
+    owner := &ownerCallbackDispatcher{application: pool}
+    client := &Client{generation: 12, current: known, callbacks: owner}
+    env := &benchmarkEnv{
+        server: &Server{sessions: map[*Session]struct{}{known: {}}},
+        clients: []*Client{client},
+        sessions: []*Session{known},
+    }
+    qa005ResetOwnedHighwaters(env)
+    if !qa005OwnedRegistryComplete(env) {
+        t.Fatal("initial stable window was rejected")
+    }
+    retired := newSession(nil, defaultSessionConfig(), sessionIdentity{}, nil, sessionHandlers{})
+    pool.mu.Lock()
+    pool.sessions[retired] = &callbackSessionQueue{session: retired, active: 1}
+    pool.mu.Unlock()
+    if qa005OwnedRegistryComplete(env) {
+        t.Fatal("late callback-owned retired Session was not detected")
+    }
+    if _, valid := qa005SampleOwnedBuffers(env); valid {
+        t.Fatal("late callback-owned retired Session was sampled")
+    }
+    if _, valid := qa005OwnedPeakUpper(env); valid {
+        t.Fatal("late callback-owned retired Session was included in HWM upper")
+    }
+}
+
+func TestQA005OwnedOverlayKnownCallbackSessionIsDeduplicated(t *testing.T) {
+    session := newSession(nil, defaultSessionConfig(), sessionIdentity{}, nil, sessionHandlers{})
+    pool := newCallbackWorkerPool(callbackApplication, 1, time.Hour)
+    pool.sessions[session] = &callbackSessionQueue{session: session, active: 1}
+    owner := &ownerCallbackDispatcher{application: pool}
+    client := &Client{generation: 11, current: session, callbacks: owner}
+    env := &benchmarkEnv{
+        server: &Server{sessions: map[*Session]struct{}{session: {}}},
+        clients: []*Client{client},
+        sessions: []*Session{session},
+    }
+    env.server.callbacks = owner // shared dispatcher must be deduplicated
+    qa005ResetOwnedHighwaters(env)
+    if !env.qa005OwnedCallbackRegistryValid || !qa005OwnedRegistryComplete(env) {
+        t.Fatal("known active callback Session invalidated the owner registry")
+    }
+    if len(env.qa005OwnedRegistry) != 1 {
+        t.Fatalf("Session identity count = %d, want one", len(env.qa005OwnedRegistry))
+    }
+}
+
+// Sampling metrics are synthetic diagnostics: monotonic gaps and snapshot
+// duration are checked, but no maximum-gap acceptance threshold is implied.
+func TestQA005OwnedOverlaySamplingWindowEvidence(t *testing.T) {
+    probe := &qa005ChargeProbe{}
+    first := time.Unix(100, 0)
+    if !qa005RecordSamplingWindow(probe, first, 10*time.Microsecond) {
+        t.Fatal("first sample was rejected")
+    }
+    if !qa005RecordSamplingWindow(probe, first.Add(5*time.Millisecond), 20*time.Microsecond) {
+        t.Fatal("second monotonic sample was rejected")
+    }
+    if probe.ownedMaxSampleGap != 5*time.Millisecond ||
+        probe.ownedMaxSnapshotDuration != 20*time.Microsecond {
+        t.Fatalf("sampling diagnostics gap=%s duration=%s",
+            probe.ownedMaxSampleGap, probe.ownedMaxSnapshotDuration)
+    }
+    duplicate := &qa005ChargeProbe{}
+    if !qa005RecordSamplingWindow(duplicate, first, time.Nanosecond) {
+        t.Fatal("first sample rejected")
+    }
+    if qa005RecordSamplingWindow(duplicate, first, time.Nanosecond) || !duplicate.invalid {
+        t.Fatal("non-monotonic sample timestamp was not rejected")
+    }
+    negative := &qa005ChargeProbe{}
+    if qa005RecordSamplingWindow(negative, first, -time.Nanosecond) || !negative.invalid {
+        t.Fatal("negative snapshot duration was not rejected")
+    }
+    zero := &qa005ChargeProbe{}
+    if qa005RecordSamplingWindow(zero, time.Time{}, 0) || !zero.invalid {
+        t.Fatal("zero timestamp was not rejected")
+    }
+}
+
 
 """
-
 
 
 def patch_types(content):
@@ -1568,6 +1758,7 @@ def patch_benchmark(content):
         "\tqa005OwnedClientEpoch map[*Client]uint64\n"
         "\tqa005OwnedClientIdentity map[*Client]*Session\n"
         "\tqa005OwnedClientRegistryValid bool\n"
+        "\tqa005OwnedCallbackRegistryValid bool\n"
         "\tqa005OwnedBaselineAdmissionEpoch uint64\n"
         "\tqa005OwnedRegistry []*Session\n"
         "\tqa005OwnedIndex map[*Session]struct{}\n",
@@ -1595,11 +1786,6 @@ def patch_benchmark(content):
         patched, "        p.samples++\n",
         "        p.samples++\n"
         "        sampleStartedAt := time.Now()\n"
-        "        if !p.ownedLastSampleAt.IsZero() {\n"
-        "            gap := sampleStartedAt.Sub(p.ownedLastSampleAt)\n"
-        "            if gap > p.ownedMaxSampleGap { p.ownedMaxSampleGap = gap }\n"
-        "        }\n"
-        "        p.ownedLastSampleAt = sampleStartedAt\n"
         "        owned, valid := qa005SampleOwnedBuffers(env)\n"
         "        d1Text, d1OK := qa005D1StackTextSample(env)\n"
         "        pendingCount, pendingOK := qa005M1PendingCount(env)\n"
@@ -1607,7 +1793,7 @@ def patch_benchmark(content):
         "        workerSlotB, workerLaneB, workers, lanes, workerOK := qa005M1WorkerQueueSample(env)\n"
         "        workerStructB, workerStructOK := qa005M1WorkerStructFootprint(workers)\n"
         "        snapshotDuration := time.Since(sampleStartedAt)\n"
-        "        if snapshotDuration > p.ownedMaxSnapshotDuration { p.ownedMaxSnapshotDuration = snapshotDuration }\n"
+        "        if !qa005RecordSamplingWindow(p, sampleStartedAt, snapshotDuration) { p.invalid = true; return }\n"
         "        if !valid || !d1OK || !pendingOK || !pendingStructOK || !workerOK || !workerStructOK { p.invalid = true; return }\n"
         "        if owned > p.ownedPeak { p.ownedPeak = owned }\n"
         "        p.ownedSamples++\n"
@@ -1729,6 +1915,10 @@ def prepare(source, output):
         "worker_scheduler_source_sha_is_compatibility_dependency": True,
         "client_generation_and_current_frozen_fail_closed": True,
         "client_connection_sources_pinned_for_epoch_semantics": True,
+        "client_retired_callback_sessions_fail_closed": True,
+        "observer_does_not_retain_unregistered_retired_sessions": True,
+        "observer_gc_liveness_bias": "NOT_MEASURED",
+        "sampling_window_monotonicity_and_snapshot_duration_tested": True,
         "qualification": "DIAGNOSTIC_ONLY",
     }
     (output / "manifest.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
