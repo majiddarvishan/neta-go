@@ -28,6 +28,7 @@
 - [Phase Q — Continuous Case-Time Interval Enclosure](NETA_GO_ORD_TIME_INTERVAL_ENCLOSURE_2026-11-21.md)
 - [Phase Q — Observer Overhead and Pipe Backpressure](NETA_GO_ORD_OBSERVER_OVERHEAD_ANALYSIS_2026-11-21.md)
 - [Phase Q — Sampling Cadence Integrity](NETA_GO_ORD_SAMPLING_CADENCE_2026-11-21.md)
+- [Phase Q — Strict ORD-EVID JSON](NETA_GO_ORD_JSON_STRICTNESS_2026-11-22.md)
 
 ## قاعده اعتبار منابع
 
