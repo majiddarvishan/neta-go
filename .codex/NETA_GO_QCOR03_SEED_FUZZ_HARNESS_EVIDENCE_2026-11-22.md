@@ -13,7 +13,8 @@
 ## Validation
 
 1. [Deterministic seed replay](https://github.com/majiddarvishan/neta-go/actions/runs/45024840700) — PASS.
-2. [Seed replay + bounded fuzz smoke](https://github.com/majiddarvishan/neta-go/actions/runs/45025704458) — PASS; both evidence artifacts uploaded.
+2. [Task-branch seed replay + bounded fuzz smoke](https://github.com/majiddarvishan/neta-go/actions/runs/45025704458) — PASS; both evidence artifacts uploaded.
+3. [Consolidated-candidate seed replay + bounded fuzz smoke](https://github.com/majiddarvishan/neta-go/actions/runs/45025904772) — PASS; 7/7 targets, approximately 368,043 fuzz executions, both evidence artifacts uploaded.
 
 The bounded fuzz smoke used `FUZZTIME=1s` and `FUZZ_PARALLEL=2` for each of these seven targets:
 
@@ -25,7 +26,7 @@ The bounded fuzz smoke used `FUZZTIME=1s` and `FUZZ_PARALLEL=2` for each of thes
 - `FuzzDecodeBindRequestV2`
 - `FuzzDecodeBindResponseV2`
 
-All **7/7** targets passed. The run executed approximately **257,947** fuzz inputs in total. No failing corpus or crash was reported.
+All **7/7** targets passed. The task-branch run executed approximately **257,947** inputs; the consolidated-candidate run executed approximately **368,043** inputs. Both used the same 1s-per-target/2-worker smoke configuration. No failing corpus or crash was reported.
 
 ## Limits
 
