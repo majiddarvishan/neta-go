@@ -126,7 +126,8 @@ class OwnedBuffersOverlayTest(unittest.TestCase):
         self.assertIn('probe-owned-max-sample-gap-ns', patched)
         self.assertIn('probe-owned-max-snapshot-ns', patched)
         self.assertIn('ownedLastSampleAt time.Time', patched)
-        self.assertIn('sampleStartedAt.Sub(p.ownedLastSampleAt)', patched)
+        self.assertIn('started.Sub(p.ownedLastSampleAt)', patched)
+        self.assertIn('qa005RecordSamplingWindow(p, sampleStartedAt, snapshotDuration)', patched)
         self.assertNotIn('ReportMetric(float64(p.ownedPeak), "retained-attributed-B")', patched)
 
 
@@ -266,6 +267,26 @@ class OwnedBuffersOverlayTest(unittest.TestCase):
         self.assertIn("c.current = nil", source)
         self.assertIn('"client_generation_and_current_frozen_fail_closed": True', SCRIPT.read_text())
 
+
+    def test_retired_client_callback_session_fails_closed(self):
+        h = mod.BENCHMARK_HELPERS
+        self.assertIn("qa005CallbackOwnerSessionsComplete", h)
+        self.assertIn("!env.qa005OwnedCallbackRegistryValid", h)
+        self.assertIn("TestQA005OwnedOverlayRetiredClientCallbackSessionFailsClosed", h)
+        self.assertIn("TestQA005OwnedOverlayKnownCallbackSessionIsDeduplicated", h)
+        self.assertIn("TestQA005OwnedOverlayLateRetiredCallbackSessionInvalidatesWindow", h)
+        self.assertIn("qa005CallbackOwnerSessionsComplete(env.server.callbacks, env.qa005OwnedIndex", h)
+        self.assertIn('"client_retired_callback_sessions_fail_closed": True', SCRIPT.read_text())
+        self.assertIn('"observer_gc_liveness_bias": "NOT_MEASURED"', SCRIPT.read_text())
+
+    def test_sampling_window_integrity_is_diagnostic_only(self):
+        h = mod.BENCHMARK_HELPERS
+        self.assertIn("func qa005RecordSamplingWindow", h)
+        self.assertIn("gap <= 0", h)
+        self.assertIn("duration < 0", h)
+        self.assertIn("TestQA005OwnedOverlaySamplingWindowEvidence", h)
+        self.assertIn('"sampling_window_monotonicity_and_snapshot_duration_tested": True', SCRIPT.read_text())
+        self.assertIn('"sampler_max_gap_policy": "NOT_APPROVED_DIAGNOSTIC_ONLY"', SCRIPT.read_text())
 
     def test_client_real_reconnect_window_regression(self):
         h = mod.BENCHMARK_HELPERS
