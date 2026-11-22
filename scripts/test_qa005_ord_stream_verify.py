@@ -75,6 +75,28 @@ class StreamVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "count differs"):
                 verify_stream(log, events, launch, end, {NAME})
 
+    def test_duplicate_json_object_keys_in_sidecar_are_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            log, events, launch, end = self.observe(Path(d))
+            lines = events.read_text().splitlines()
+            lines[0] = lines[0].replace(
+                '"line_index":1,',
+                '"line_index":1,"line_index":1,',
+                1,
+            )
+            events.write_text("\\n".join(lines) + "\\n")
+            with self.assertRaisesRegex(ValueError, "Duplicate JSON object key: line_index"):
+                verify_stream(log, events, launch, end, {NAME})
+
+    def test_nonstandard_json_numeric_constant_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            log, events, launch, end = self.observe(Path(d))
+            lines = events.read_text().splitlines()
+            lines[0] = lines[0][:-1] + ',"unused":NaN}'
+            events.write_text("\\n".join(lines) + "\\n")
+            with self.assertRaisesRegex(ValueError, "Non-standard JSON numeric constant: NaN"):
+                verify_stream(log, events, launch, end, {NAME})
+
     def test_raw_log_tampering_detected(self):
         with tempfile.TemporaryDirectory() as d:
             log, events, launch, end = self.observe(Path(d))
