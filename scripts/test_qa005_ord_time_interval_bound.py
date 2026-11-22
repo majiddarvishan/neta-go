@@ -54,12 +54,38 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
             envelope = enclosure["joint_5m_corner_ci_envelope"][key]["ci_log_envelope"]
             self.assertLessEqual(envelope[0], corner["ci_log"][0] + 1e-12)
             self.assertGreaterEqual(envelope[1], corner["ci_log"][1] - 1e-12)
+        float_path = enclosure["production_fit_one_float_path_enclosure"]
+        self.assertTrue(float_path["complete"], float_path)
+        for corner in fit["joint_5m_corners"]:
+            key = "order=%+d,time=%+d" % (
+                corner["first_side_order"], int(corner["scaled_time"])
+            )
+            envelope = float_path["joint_5m_corner_ci_envelope"][key]
+            self.assertLessEqual(
+                envelope["estimate_log_range"][0],
+                corner["estimate_log"],
+            )
+            self.assertGreaterEqual(
+                envelope["estimate_log_range"][1],
+                corner["estimate_log"],
+            )
+            self.assertLessEqual(
+                envelope["ci_log_envelope"][0],
+                corner["ci_log"][0],
+            )
+            self.assertGreaterEqual(
+                envelope["ci_log_envelope"][1],
+                corner["ci_log"][1],
+            )
         beta = fit["model_coefficients_mean_order_time"][2]
         slope = enclosure[
             "time_coefficient_log_ratio_per_normalized_window_interval"
         ]
         self.assertLessEqual(slope[0], beta + 1e-12)
         self.assertGreaterEqual(slope[1], beta - 1e-12)
+        float_slope = float_path["time_coefficient_interval"]
+        self.assertLessEqual(float_slope[0], beta)
+        self.assertGreaterEqual(float_slope[1], beta)
 
     def test_exact_case_times_produce_complete_enclosure(self):
         intervals = make_intervals(width_ns=0)
