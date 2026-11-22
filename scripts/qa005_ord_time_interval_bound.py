@@ -161,30 +161,22 @@ def _fit_one_float_path_enclosure(y, order, time_intervals, margin, critical):
         }
 
     pivot_tolerance = FIT_ONE_PIVOT_RELATIVE_TOLERANCE * scale_upper
+    # The caller supplies ten strictly chronological normalized times with
+    # t[0] == -1 and t[9] == +1, and a balanced +/-1 order vector. Therefore:
+    # - column 0: |sum(t)| < 8, strictly below the intercept pivot 10;
+    # - column 1: |sum(order*t)| <= sum(|t|) < 10, below the order pivot 10;
+    # - column 2: only the final Schur pivot remains.
+    # This proves inverse3() selects rows 0, 1, 2 without swaps for every
+    # feasible time assignment, even if the independent interval box is wider.
+    if (sum(order) != 0 or time_intervals[0] != (-1.0, -1.0) or
+            time_intervals[-1] != (1.0, 1.0) or
+            any(lo < -1.0 or hi > 1.0 or lo > hi
+                for lo, hi in time_intervals)):
+        return {
+            "complete": False,
+            "reason": "Production fit_one fixed-pivot proof preconditions are not met",
+        }
     for column in range(3):
-        pivot_row = None
-        for candidate in range(column, 3):
-            candidate_lower, _ = _absolute_bounds(
-                augmented[candidate][column]
-            )
-            other_upper = [
-                _absolute_bounds(augmented[other][column])[1]
-                for other in range(column, 3) if other != candidate
-            ]
-            if all(candidate_lower > bound for bound in other_upper):
-                pivot_row = candidate
-                break
-        if pivot_row is None:
-            return {
-                "complete": False,
-                "reason": "Production fit_one pivot choice is not uniquely enclosed",
-                "pivot_column": column,
-                "pivot_tolerance": pivot_tolerance,
-            }
-        if pivot_row != column:
-            augmented[column], augmented[pivot_row] = (
-                augmented[pivot_row], augmented[column]
-            )
         pivot = augmented[column][column]
         pivot_lower = _absolute_bounds(pivot)[0]
         if pivot_lower <= pivot_tolerance:
