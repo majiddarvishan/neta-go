@@ -29,6 +29,7 @@
 - [Phase Q — Observer Overhead and Pipe Backpressure](NETA_GO_ORD_OBSERVER_OVERHEAD_ANALYSIS_2026-11-21.md)
 - [Phase Q — Sampling Cadence Integrity](NETA_GO_ORD_SAMPLING_CADENCE_2026-11-21.md)
 - [Phase Q — Strict ORD-EVID JSON](NETA_GO_ORD_JSON_STRICTNESS_2026-11-22.md)
+- [Phase Q — Q-COR-02 Bounded Harness](NETA_GO_QCOR02_BOUNDED_HARNESS_2026-11-22.md)
 
 ## قاعده اعتبار منابع
 
