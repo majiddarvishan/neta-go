@@ -11,6 +11,7 @@ import math
 
 PAIR_COUNT = 10
 MAX_PAIR_MIDPOINT_TWICE_NS = (1 << 63) - 1
+FIT_ONE_PIVOT_RELATIVE_TOLERANCE = 1e-12
 
 
 def _finite_interval(value, label):
@@ -54,6 +55,28 @@ def _square(value):
         return (0.0, _up(max(value[0] * value[0], value[1] * value[1])))
     squares = (value[0] * value[0], value[1] * value[1])
     return (max(0.0, _down(min(squares))), _up(max(squares)))
+
+
+def _integer_float_interval(value):
+    """Enclose the exact integer after the same int-to-float conversion class.
+
+    Python's int/int true division converts each operand to binary64 before the
+    divide. A single nextafter around the final quotient is not enough when
+    either integer is above the exact-integer range of binary64.
+    """
+    if type(value) is not int:
+        raise ValueError("Expected exact integer time arithmetic operand")
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("Integer time operand cannot be represented as float") from exc
+    if not math.isfinite(converted):
+        raise ValueError("Nonfinite converted integer time operand")
+    if converted < value:
+        return (converted, math.nextafter(converted, math.inf))
+    if converted > value:
+        return (math.nextafter(converted, -math.inf), converted)
+    return (converted, converted)
 
 
 def _divide_positive(numerator, denominator):
@@ -102,18 +125,29 @@ def _case_time_scaled_intervals(pair_intervals):
     scaled = [(-1.0, -1.0)]
     for index in range(1, PAIR_COUNT - 1):
         # t_i = 2 * (x_i - x_1) / (x_10 - x_1) - 1.
-        # The function increases with x_i and decreases with x_1 and x_10.
-        # Integer numerators/denominators avoid intermediate float rounding;
-        # one nextafter step encloses the correctly-rounded division.
-        min_denominator = last_upper - first_upper
-        min_numerator = 2 * (lower[index] - first_upper) - min_denominator
-        max_denominator = last_lower - first_lower
-        max_numerator = 2 * (upper[index] - first_lower) - max_denominator
-        if min_denominator <= 0 or max_denominator <= 0:
+        # It increases with x_i and decreases with x_1 and x_10. Enclose
+        # each integer-to-binary64 conversion as well as multiply/divide/subtract
+        # in the same operation order used by endpoint_sensitivity.
+        min_delta = lower[index] - first_upper
+        min_span = last_upper - first_upper
+        max_delta = upper[index] - first_lower
+        max_span = last_lower - first_lower
+        if min_span <= 0 or max_span <= 0:
             raise ValueError("Invalid normalized case-time denominator")
-        lo = _down(min_numerator / min_denominator)
-        hi = _up(max_numerator / max_denominator)
-        if not -1.0 <= lo <= hi <= 1.0:
+        min_ratio = _divide_positive(
+            _scale(_integer_float_interval(min_delta), 2.0),
+            _integer_float_interval(min_span),
+        )
+        max_ratio = _divide_positive(
+            _scale(_integer_float_interval(max_delta), 2.0),
+            _integer_float_interval(max_span),
+        )
+        min_time = _sub(min_ratio, (1.0, 1.0))
+        max_time = _sub(max_ratio, (1.0, 1.0))
+        # Exact chronology guarantees the normalized value is in [-1, 1].
+        lo = max(-1.0, min_time[0])
+        hi = min(1.0, max_time[1])
+        if lo > hi:
             raise ValueError("Normalized case-time interval outside [-1,1]")
         scaled.append((lo, hi))
     scaled.append((1.0, 1.0))
@@ -172,12 +206,22 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         _sub(sum_t2, _mul(_square(sum_t), inv_n)),
         _mul(_square(sum_ot), inv_n),
     )
-    if sst[0] <= 0:
+    # fit_one() uses inverse3() with a relative pivot rejection threshold
+    # of 1e-12 * scale. For a chronological, balanced ten-row design, the
+    # first two diagonal pivots are exactly 10 and the final Schur pivot is
+    # residualized time SS; all other X'X entries have magnitude < 10.
+    # Therefore scale == 10 and the production final-pivot threshold is 1e-11.
+    fit_one_pivot_tolerance = FIT_ONE_PIVOT_RELATIVE_TOLERANCE * float(n)
+    if sst[0] <= fit_one_pivot_tolerance:
         return {
             "method": "outward-rounded interval arithmetic over an independent normalized-time box",
             "continuous_interval_enclosure_complete": False,
             "continuous_interval_bound_proved": False,
-            "reason": "Residualized time sum-of-squares lower bound is nonpositive",
+            "reason": (
+                "Residualized time sum-of-squares lower bound does not exceed "
+                "the production fit_one pivot tolerance"
+            ),
+            "fit_one_pivot_tolerance": fit_one_pivot_tolerance,
             "residualized_time_sum_squares_interval": list(sst),
             "normalized_case_time_intervals": [list(value) for value in t_intervals],
             "qualification": "DRIFT-INCONCLUSIVE",
@@ -259,6 +303,7 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         "case_time_precision_proved": False,
         "normalized_case_time_intervals": [list(value) for value in t_intervals],
         "residualized_time_sum_squares_interval": list(sst),
+        "fit_one_pivot_tolerance": fit_one_pivot_tolerance,
         "residual_sum_squares_upper": sse[1],
         "time_coefficient_log_ratio_per_normalized_window_interval": list(beta_time),
         "maximum_corner_standard_error_upper": max(standard_error_uppers),
