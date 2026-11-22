@@ -98,6 +98,203 @@ def _sum(values):
     return result
 
 
+def _absolute_bounds(value):
+    if value[0] <= 0 <= value[1]:
+        return (0.0, max(abs(value[0]), abs(value[1])))
+    return (min(abs(value[0]), abs(value[1])),
+            max(abs(value[0]), abs(value[1])))
+
+
+def _divide_nonzero(numerator, denominator):
+    if denominator[0] <= 0 <= denominator[1]:
+        raise ValueError("Floating-point fit pivot interval contains zero")
+    reciprocal = (_down(1.0 / denominator[1]),
+                  _up(1.0 / denominator[0]))
+    return _mul(numerator, reciprocal)
+
+
+def _sqrt_nonnegative(value):
+    if value[0] < 0 or value[1] < 0:
+        raise ValueError("Negative square-root interval")
+    lower = math.sqrt(value[0])
+    upper = math.sqrt(value[1])
+    return (
+        0.0 if lower == 0 else max(0.0, _down(lower)),
+        _up(upper),
+    )
+
+
+def _fit_one_float_path_enclosure(y, order, time_intervals, margin, critical):
+    """Interval-evaluate fit_one's actual binary64 operation sequence.
+
+    The interval Gauss-Jordan path requires a provably unique maximum pivot at
+    every column. If interval uncertainty cannot prove the production pivot
+    choice or its 1e-12 relative threshold, this helper fails closed.
+    """
+    n = PAIR_COUNT
+    x = [
+        ((1.0, 1.0), (float(o), float(o)), t)
+        for o, t in zip(order, time_intervals)
+    ]
+    xtx = [
+        [
+            _sum([_mul(row[j], row[k]) for row in x])
+            for k in range(3)
+        ]
+        for j in range(3)
+    ]
+    augmented = [
+        list(row) + [
+            (1.0, 1.0) if i == j else (0.0, 0.0)
+            for j in range(3)
+        ]
+        for i, row in enumerate(xtx)
+    ]
+    scale_upper = max(
+        _absolute_bounds(value)[1]
+        for row in xtx for value in row
+    )
+    if not math.isfinite(scale_upper) or scale_upper <= 0:
+        return {
+            "complete": False,
+            "reason": "Nonfinite or singular production design scale",
+        }
+
+    pivot_tolerance = FIT_ONE_PIVOT_RELATIVE_TOLERANCE * scale_upper
+    for column in range(3):
+        pivot_row = None
+        for candidate in range(column, 3):
+            candidate_lower, _ = _absolute_bounds(
+                augmented[candidate][column]
+            )
+            other_upper = [
+                _absolute_bounds(augmented[other][column])[1]
+                for other in range(column, 3) if other != candidate
+            ]
+            if all(candidate_lower > bound for bound in other_upper):
+                pivot_row = candidate
+                break
+        if pivot_row is None:
+            return {
+                "complete": False,
+                "reason": "Production fit_one pivot choice is not uniquely enclosed",
+                "pivot_column": column,
+                "pivot_tolerance": pivot_tolerance,
+            }
+        if pivot_row != column:
+            augmented[column], augmented[pivot_row] = (
+                augmented[pivot_row], augmented[column]
+            )
+        pivot = augmented[column][column]
+        pivot_lower = _absolute_bounds(pivot)[0]
+        if pivot_lower <= pivot_tolerance:
+            return {
+                "complete": False,
+                "reason": "Production fit_one pivot interval does not clear relative tolerance",
+                "pivot_column": column,
+                "pivot_lower_abs": pivot_lower,
+                "pivot_tolerance": pivot_tolerance,
+            }
+        augmented[column] = [
+            _divide_nonzero(value, pivot)
+            for value in augmented[column]
+        ]
+        for row_index in range(3):
+            if row_index == column:
+                continue
+            factor = augmented[row_index][column]
+            augmented[row_index] = [
+                _sub(value, _mul(factor, pivot_value))
+                for value, pivot_value in zip(
+                    augmented[row_index], augmented[column]
+                )
+            ]
+    inverse = [row[3:] for row in augmented]
+
+    y_intervals = [(float(value), float(value)) for value in y]
+    xty = [
+        _sum([_mul(row[j], observation)
+              for row, observation in zip(x, y_intervals)])
+        for j in range(3)
+    ]
+    beta = [
+        _sum([_mul(value, observation)
+              for value, observation in zip(inverse_row, xty)])
+        for inverse_row in inverse
+    ]
+    residuals = [
+        _sub(observation, _sum([
+            _mul(value, coefficient)
+            for value, coefficient in zip(row, beta)
+        ]))
+        for observation, row in zip(y_intervals, x)
+    ]
+    mse = _divide_positive(
+        _sum([_square(value) for value in residuals]),
+        (float(n - 3), float(n - 3)),
+    )
+    covariance = [
+        [_mul(mse, value) for value in row]
+        for row in inverse
+    ]
+
+    log_limit = math.log1p(margin)
+    corner_envelopes = {}
+    all_inside = True
+    maximum_standard_error_upper = 0.0
+    for first_order in (-1, +1):
+        for corner_time in (-1, +1):
+            row = (
+                (1.0, 1.0),
+                (float(first_order), float(first_order)),
+                (float(corner_time), float(corner_time)),
+            )
+            estimate = _sum([
+                _mul(row[index], beta[index])
+                for index in range(3)
+            ])
+            variance = _sum([
+                _mul(_mul(row[i], covariance[i][j]), row[j])
+                for i in range(3)
+                for j in range(3)
+            ])
+            if variance[0] < -1e-12:
+                return {
+                    "complete": False,
+                    "reason": "Production fit_one corner variance may cross rejection threshold",
+                    "variance_interval": list(variance),
+                }
+            nonnegative_variance = (
+                max(0.0, variance[0]),
+                max(0.0, variance[1]),
+            )
+            standard_error = _sqrt_nonnegative(nonnegative_variance)
+            maximum_standard_error_upper = max(
+                maximum_standard_error_upper, standard_error[1]
+            )
+            half_width = _mul((float(critical), float(critical)), standard_error)
+            ci_lower = _sub(estimate, half_width)
+            ci_upper = _add(estimate, half_width)
+            inside = ci_lower[0] > -log_limit and ci_upper[1] < log_limit
+            all_inside = all_inside and inside
+            key = "order=%+d,time=%+d" % (first_order, corner_time)
+            corner_envelopes[key] = {
+                "estimate_log_range": [estimate[0], estimate[1]],
+                "ci_log_envelope": [ci_lower[0], ci_upper[1]],
+                "inside_fixed_bound": inside,
+            }
+
+    return {
+        "complete": True,
+        "method": "outward-rounded interval evaluation of fit_one binary64 operations",
+        "pivot_tolerance_upper": pivot_tolerance,
+        "time_coefficient_interval": [beta[2][0], beta[2][1]],
+        "maximum_corner_standard_error_upper": maximum_standard_error_upper,
+        "joint_5m_corner_ci_envelope": corner_envelopes,
+        "all_corner_ci_envelopes_inside_fixed_bounds": all_inside,
+    }
+
+
 def _case_time_scaled_intervals(pair_intervals):
     if not isinstance(pair_intervals, list) or len(pair_intervals) != PAIR_COUNT:
         raise ValueError("Exactly ten paired-case time intervals are required")
