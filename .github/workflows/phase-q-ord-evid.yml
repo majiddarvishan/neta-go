@@ -6,6 +6,8 @@ on:
     types: [opened, reopened, synchronize, closed]
     paths:
       - 'scripts/qa005_ord_evidence.py'
+      - 'scripts/qa005_ord_json.py'
+      - 'scripts/test_qa005_ord_json.py'
       - 'scripts/qa005_ord_drift.py'
       - 'scripts/qa005_ord_time_uncertainty.py'
       - 'scripts/qa005_ord_telemetry_verify.py'
@@ -48,7 +50,7 @@ jobs:
           set -euo pipefail
           bash -n scripts/qa005_qualify.sh
           python3 -B -m unittest discover -s scripts -p 'test_qa005_ord_*.py' -v
-          python3 -B -m py_compile scripts/qa005_ord_evidence.py scripts/qa005_ord_drift.py scripts/qa005_ord_time_uncertainty.py scripts/qa005_ord_telemetry_verify.py scripts/qa005_ord_time_interval_bound.py scripts/qa005_ord_stream_capture.py scripts/qa005_ord_stream_verify.py
+          python3 -B -m py_compile scripts/qa005_ord_json.py scripts/qa005_ord_evidence.py scripts/qa005_ord_drift.py scripts/qa005_ord_time_uncertainty.py scripts/qa005_ord_telemetry_verify.py scripts/qa005_ord_time_interval_bound.py scripts/qa005_ord_stream_capture.py scripts/qa005_ord_stream_verify.py
       - name: Assert unchanged default benchmark invocation and opt-in only
         shell: bash
         run: |
@@ -74,7 +76,7 @@ jobs:
           echo 'Performance Gate DISABLED; no numeric baseline or SLA established.'
 
   cleanup-merged-task-branch:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/phase-q-sampling-cadence-handoff-2026-11-21' }}
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'qual/ord-evid-fit-enclosure-hardening-2026-11-22' }}
     name: Delete unchanged merged ORD-EVID branch
     permissions:
       contents: write
@@ -88,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          branch='docs/phase-q-sampling-cadence-handoff-2026-11-21'
+          branch='qual/ord-evid-fit-enclosure-hardening-2026-11-22'
           repo="$GITHUB_REPOSITORY"
           live="$(gh api "repos/$repo/git/ref/heads/$branch" --jq '.object.sha' 2>/dev/null || true)"
           if [[ -z "$live" ]]; then

@@ -16,6 +16,8 @@ import subprocess
 import sys
 import time
 
+from qa005_ord_json import loads as strict_json_loads
+
 SENSORS = {
     "loadavg": "/proc/loadavg",
     "cpu_psi": "/proc/pressure/cpu",
@@ -94,9 +96,9 @@ def run(args):
         raise ValueError("Missing immutable line observer source")
     environment_path = Path(args.environment)
     try:
-        metadata = json.loads(environment_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Missing or invalid environment evidence") from exc
+        metadata = strict_json_loads(environment_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError("Missing or invalid environment evidence: " + str(exc)) from exc
     required = ("source_sha", "scenario_mode", "harness_sha256",
                 "workload_config", "go_version")
     if not isinstance(metadata, dict) or any(
@@ -206,6 +208,7 @@ def run(args):
             "workload_config": metadata["workload_config"],
             "environment_sha256": sha256_file(environment_path),
             "collector_sha256": sha256_file(Path(__file__)),
+            "strict_json_sha256": sha256_file(Path(__file__).with_name("qa005_ord_json.py")),
             "host_kernel": platform.platform(),
             "start_before_spawn": start,
             "start_after_spawn": launch,

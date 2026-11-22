@@ -64,10 +64,11 @@ No real A/A pair, benchmark, stress, soak, extended fuzz, production Go code, pu
 
 ## Remaining work
 
-1. Independently review the new outward-rounded continuous interval enclosure candidate ([design note](NETA_GO_ORD_TIME_INTERVAL_ENCLOSURE_2026-11-21.md)) for algebraic and production floating-point fit equivalence; `continuous_interval_bound_proved` remains false until that review passes.
+1. The continuous enclosure now includes a separate outward-rounded interval evaluator for the actual production `fit_one` binary64 operation sequence, plus explicit binary64 conversion and pivot-tolerance handling ([design note](NETA_GO_ORD_TIME_INTERVAL_ENCLOSURE_2026-11-21.md)). Dedicated CI and independent code review are still required; `continuous_interval_bound_proved` remains false.
 2. Characterize actual Go test output buffering and observer scheduling/backpressure without assuming line arrival equals case completion.
 3. Quantify observer overhead and temporal error on the accepted dedicated reference host; preserve the three distinct observer modes.
 4. Review nonlinear/transient drift and model adequacy with complete host telemetry and exact A/A evidence.
-5. Obtain separate authorization before any real QA-004/Core/Full 10-pair measurement.
+5. Apply strict duplicate-safe JSON decoding to manifests, process records, snapshots and line sidecars; reject non-standard NaN/infinity constants and bind the parser helper SHA ([strict JSON note](NETA_GO_ORD_JSON_STRICTNESS_2026-11-22.md)).
+6. Obtain separate authorization before any real QA-004/Core/Full 10-pair measurement.
 
 **Accounting is unchanged:** 18 normalized top-level packages remain open (9 Qualification, 7 Owner Decisions, 2 Release). Q-COR-01 remains closed. No Qualification package is closed by this synthetic implementation.

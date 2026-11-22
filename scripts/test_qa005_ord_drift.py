@@ -185,6 +185,9 @@ class OrdDriftTests(unittest.TestCase):
                     "collector_sha256": hashlib.sha256(
                         (HERE / "qa005_ord_evidence.py").read_bytes()
                     ).hexdigest(),
+                    "strict_json_sha256": hashlib.sha256(
+                        (HERE / "qa005_ord_json.py").read_bytes()
+                    ).hexdigest(),
                     "observer_script_sha256": hashlib.sha256(
                         (HERE / "qa005_ord_stream_capture.py").read_bytes()
                     ).hexdigest(),
@@ -291,6 +294,45 @@ class OrdDriftTests(unittest.TestCase):
                 "not_observed",
             )
             self.assertEqual(report["qualification"], "DRIFT-INCONCLUSIVE")
+
+    def test_duplicate_json_keys_in_environment_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_complete_qa004(root)
+            path = root / "baseline" / "environment.json"
+            content = path.read_text()
+            content = content.replace(
+                '"source_sha":',
+                '"source_sha": "a000000000000000000000000000000000000000", "source_sha":',
+                1,
+            )
+            path.write_text(content)
+            report = analyze(root, "qa004")
+            self.assertEqual(report["qualification"], "DRIFT-INCONCLUSIVE")
+            self.assertEqual(report["statistical_diagnostics"], "INCONCLUSIVE")
+            self.assertTrue(any(
+                "Duplicate JSON object key: source_sha" in reason
+                for reason in report["reasons"]
+            ))
+
+    def test_duplicate_json_keys_in_process_record_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_complete_qa004(root)
+            path = root / "ord-evidence" / "01-baseline.json"
+            content = path.read_text()
+            content = content.replace(
+                '"pair": 1,',
+                '"pair": 1, "pair": 1,',
+                1,
+            )
+            path.write_text(content)
+            report = analyze(root, "qa004")
+            self.assertEqual(report["qualification"], "DRIFT-INCONCLUSIVE")
+            self.assertTrue(any(
+                "Duplicate JSON object key: pair" in reason
+                for reason in report["reasons"]
+            ))
 
     def test_boolean_pair_identity_and_exit_code_fail_closed(self):
         for field, value in (("pair", True), ("exit_code", False)):

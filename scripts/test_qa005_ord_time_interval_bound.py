@@ -7,7 +7,10 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 from qa005_ord_drift import cached_student_t_critical, fit_one
-from qa005_ord_time_interval_bound import continuous_interval_enclosure
+from qa005_ord_time_interval_bound import (
+    _case_time_scaled_intervals,
+    continuous_interval_enclosure,
+)
 
 
 ORDER = [1 if i % 2 == 0 else -1 for i in range(10)]
@@ -41,9 +44,21 @@ def fit_for_raw_times(y, order, raw_times, margin=MARGIN):
 
 class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
     def assert_fit_inside_enclosure(self, fit, enclosure, raw_times=None):
-        self.assertTrue(enclosure["continuous_interval_enclosure_complete"])
         self.assertFalse(enclosure["continuous_interval_bound_proved"])
         self.assertFalse(enclosure["case_time_precision_proved"])
+        float_path = enclosure["production_fit_one_float_path_enclosure"]
+        if float_path["complete"]:
+            self.assertTrue(enclosure["continuous_interval_enclosure_complete"])
+            self.assertEqual(
+                enclosure["joint_5m_corner_ci_envelope_source"],
+                "production_fit_one_float_path",
+            )
+        else:
+            self.assertFalse(enclosure["continuous_interval_enclosure_complete"])
+            self.assertEqual(
+                enclosure["joint_5m_corner_ci_envelope_source"],
+                "closed_form_only_float_path_inconclusive",
+            )
         for corner in fit["joint_5m_corners"]:
             key = "order=%+d,time=%+d" % (
                 corner["first_side_order"], int(corner["scaled_time"])
@@ -57,13 +72,38 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         ]
         self.assertLessEqual(slope[0], beta + 1e-12)
         self.assertGreaterEqual(slope[1], beta - 1e-12)
+        if float_path["complete"]:
+            for corner in fit["joint_5m_corners"]:
+                key = "order=%+d,time=%+d" % (
+                    corner["first_side_order"], int(corner["scaled_time"])
+                )
+                envelope = float_path["joint_5m_corner_ci_envelope"][key]
+                self.assertLessEqual(
+                    envelope["estimate_log_range"][0],
+                    corner["estimate_log"],
+                )
+                self.assertGreaterEqual(
+                    envelope["estimate_log_range"][1],
+                    corner["estimate_log"],
+                )
+                self.assertLessEqual(
+                    envelope["ci_log_envelope"][0],
+                    corner["ci_log"][0],
+                )
+                self.assertGreaterEqual(
+                    envelope["ci_log_envelope"][1],
+                    corner["ci_log"][1],
+                )
+            float_slope = float_path["time_coefficient_interval"]
+            self.assertLessEqual(float_slope[0], beta)
+            self.assertGreaterEqual(float_slope[1], beta)
 
     def test_exact_case_times_produce_complete_enclosure(self):
         intervals = make_intervals(width_ns=0)
         result = continuous_interval_enclosure(
             Y, ORDER, intervals, MARGIN, CRITICAL
         )
-        self.assertTrue(result["continuous_interval_enclosure_complete"])
+        self.assertTrue(result["continuous_interval_enclosure_complete"], result)
         self.assertFalse(result["continuous_interval_bound_proved"])
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
         exact = [item["lower_pair_midpoint_twice_ns"] for item in intervals]
@@ -76,7 +116,9 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         result = continuous_interval_enclosure(
             Y, ORDER, intervals, MARGIN, CRITICAL
         )
-        self.assertTrue(result["continuous_interval_enclosure_complete"])
+        self.assertFalse(result["continuous_interval_enclosure_complete"], result)
+        self.assertIn("corner variance", result["production_float_path_reason"])
+        self.assertEqual(result["continuous_interval_bound_status"], "INCONCLUSIVE_PRODUCTION_FLOAT_PATH")
         lower = [item["lower_pair_midpoint_twice_ns"] for item in intervals]
         upper = [item["upper_pair_midpoint_twice_ns"] for item in intervals]
 
@@ -104,18 +146,81 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         )
         self.assertFalse(result["continuous_interval_enclosure_complete"])
         self.assertFalse(result["continuous_interval_bound_proved"])
-        self.assertIn("sum-of-squares lower bound is nonpositive", result["reason"])
+        self.assertIn("production fit_one pivot tolerance", result["reason"])
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
+
+    def test_near_singular_box_respects_production_fit_one_pivot_threshold(self):
+        epsilon = 5e-7
+        normalized = (
+            [-1 + index * epsilon for index in range(5)] +
+            [1 - (9 - index) * epsilon for index in range(5, 10)]
+        )
+        raw_times = [
+            1_000_000_000 + round((value + 1) * 500_000_000)
+            for value in normalized
+        ]
+        intervals = [
+            {
+                "pair": index + 1,
+                "lower_pair_midpoint_twice_ns": 2 * value,
+                "upper_pair_midpoint_twice_ns": 2 * value,
+            }
+            for index, value in enumerate(raw_times)
+        ]
+        result = continuous_interval_enclosure(
+            [0.0] * 10, [1] * 5 + [-1] * 5, intervals, .05, CRITICAL
+        )
+        self.assertFalse(result["continuous_interval_enclosure_complete"])
+        self.assertIn("production fit_one pivot tolerance", result["reason"])
+        lower, upper = result["residualized_time_sum_squares_interval"]
+        self.assertGreater(lower, 0)
+        self.assertLessEqual(lower, result["fit_one_pivot_tolerance"])
+        self.assertEqual(result["fit_one_pivot_tolerance"], 1e-11)
+        with self.assertRaisesRegex(ValueError, "numerically singular"):
+            fit_one([0.0] * 10, [1] * 5 + [-1] * 5,
+                    [2.0 * (value - raw_times[0]) /
+                     (raw_times[-1] - raw_times[0]) - 1.0
+                     for value in raw_times], .05, FAMILY_SIZE)
+
+    def test_large_integer_time_normalization_encloses_python_float_operations(self):
+        base = 1 << 60
+        span = 1 << 54
+        step = span // 9
+        width = 1 << 20
+        pair_intervals = [
+            {
+                "pair": index + 1,
+                "lower_pair_midpoint_twice_ns": 2 * (base + index * step),
+                "upper_pair_midpoint_twice_ns": 2 * (base + index * step + width),
+            }
+            for index in range(10)
+        ]
+        enclosed = _case_time_scaled_intervals(pair_intervals)
+        for mask in range(1 << 10):
+            raw = [
+                item["upper_pair_midpoint_twice_ns"] // 2
+                if mask & (1 << index)
+                else item["lower_pair_midpoint_twice_ns"] // 2
+                for index, item in enumerate(pair_intervals)
+            ]
+            actual = [
+                2.0 * (value - raw[0]) / (raw[-1] - raw[0]) - 1.0
+                for value in raw
+            ]
+            for index, value in enumerate(actual):
+                self.assertLessEqual(enclosed[index][0], value)
+                self.assertGreaterEqual(enclosed[index][1], value)
 
     def test_out_of_bound_corner_envelope_is_not_hidden(self):
         result = continuous_interval_enclosure(
             [0.5] * 10, ORDER, make_intervals(100_000_000), .05, CRITICAL
         )
-        self.assertTrue(result["continuous_interval_enclosure_complete"])
-        self.assertFalse(result["all_corner_ci_envelopes_inside_fixed_bounds"])
+        self.assertFalse(result["continuous_interval_enclosure_complete"])
+        self.assertFalse(result["closed_form_all_corner_ci_envelopes_inside_fixed_bounds"])
+        self.assertIsNone(result["all_corner_ci_envelopes_inside_fixed_bounds"])
         self.assertEqual(
             result["continuous_interval_bound_status"],
-            "ENCLOSURE_EXPOSES_OUT_OF_BOUND_POSSIBILITY",
+            "INCONCLUSIVE_PRODUCTION_FLOAT_PATH",
         )
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
 

@@ -1,4 +1,5 @@
 """Fast, no-benchmark tests for the opt-in ORD-EVID collection wrapper."""
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -51,6 +52,10 @@ class OrdEvidenceTests(unittest.TestCase):
             self.assertEqual(record["schema"], "neta-qa005-ord-process-evidence-v1")
             self.assertEqual(record["harness_sha256"], "a" * 64)
             self.assertEqual(record["workload_config"], "synthetic-core-no-benchmark")
+            self.assertEqual(
+                record["strict_json_sha256"],
+                hashlib.sha256((HERE / "qa005_ord_json.py").read_bytes()).hexdigest(),
+            )
             self.assertEqual(len(record["environment_sha256"]), 64)
             self.assertEqual(len(record["collector_sha256"]), 64)
             self.assertEqual(record["pair"], 1)
@@ -144,6 +149,20 @@ class OrdEvidenceTests(unittest.TestCase):
         self.assertIn("governors", sample["missing_sensors"])
         self.assertNotIn("frequencies_khz", sample["missing_sensors"])
         self.assertNotIn("thermal_millidegrees", sample["missing_sensors"])
+
+    def test_duplicate_environment_json_key_fails_before_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "environment.json").write_text(
+                '{"source_sha":"first","source_sha":"second",'
+                '"go_version":"synthetic","scenario_mode":"core",'
+                '"harness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+                '"workload_config":"synthetic-core"}'
+            )
+            result = self.invoke(directory)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("Duplicate JSON object key: source_sha", result.stderr)
+            self.assertFalse((root / "benchmark.log").exists())
 
     def test_wrong_source_or_mode_fails_before_process(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -11,6 +11,7 @@ import math
 
 PAIR_COUNT = 10
 MAX_PAIR_MIDPOINT_TWICE_NS = (1 << 63) - 1
+FIT_ONE_PIVOT_RELATIVE_TOLERANCE = 1e-12
 
 
 def _finite_interval(value, label):
@@ -56,6 +57,28 @@ def _square(value):
     return (max(0.0, _down(min(squares))), _up(max(squares)))
 
 
+def _integer_float_interval(value):
+    """Enclose the exact integer after the same int-to-float conversion class.
+
+    Python's int/int true division converts each operand to binary64 before the
+    divide. A single nextafter around the final quotient is not enough when
+    either integer is above the exact-integer range of binary64.
+    """
+    if type(value) is not int:
+        raise ValueError("Expected exact integer time arithmetic operand")
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("Integer time operand cannot be represented as float") from exc
+    if not math.isfinite(converted):
+        raise ValueError("Nonfinite converted integer time operand")
+    if converted < value:
+        return (converted, math.nextafter(converted, math.inf))
+    if converted > value:
+        return (math.nextafter(converted, -math.inf), converted)
+    return (converted, converted)
+
+
 def _divide_positive(numerator, denominator):
     if denominator[0] <= 0:
         raise ValueError("Interval denominator is not strictly positive")
@@ -73,6 +96,246 @@ def _sum(values):
     for value in values:
         result = _add(result, value)
     return result
+
+
+def _absolute_bounds(value):
+    if value[0] <= 0 <= value[1]:
+        return (0.0, max(abs(value[0]), abs(value[1])))
+    return (min(abs(value[0]), abs(value[1])),
+            max(abs(value[0]), abs(value[1])))
+
+
+def _divide_nonzero(numerator, denominator):
+    if denominator[0] <= 0 <= denominator[1]:
+        raise ValueError("Floating-point fit pivot interval contains zero")
+    reciprocal = (_down(1.0 / denominator[1]),
+                  _up(1.0 / denominator[0]))
+    return _mul(numerator, reciprocal)
+
+
+def _quadratic_variance_lower_bound(covariance):
+    """Bound x'Cov*x for x in {-1,+1}^3 without interval dependency loss.
+
+    The production corner expression is a nine-term float sum. Its exact
+    pre-summation quadratic form equals x'((C+C.T)/2)x. Gershgorin bounds the
+    symmetric part from the actual covariance entries enclosed by C. A
+    gamma_8 bound plus subnormal allowance covers the eight float additions.
+    """
+    symmetric = [
+        [
+            _scale(_add(covariance[i][j], covariance[j][i]), 0.5)
+            for j in range(3)
+        ]
+        for i in range(3)
+    ]
+    eigenvalue_lower = math.inf
+    for i in range(3):
+        radius_upper = 0.0
+        for j in range(3):
+            if i == j:
+                continue
+            radius_upper = _up(
+                radius_upper + _absolute_bounds(symmetric[i][j])[1]
+            )
+        eigenvalue_lower = min(
+            eigenvalue_lower,
+            _down(symmetric[i][i][0] - radius_upper),
+        )
+
+    absolute_sum_upper = 0.0
+    for row in covariance:
+        for value in row:
+            absolute_sum_upper = _up(
+                absolute_sum_upper + _absolute_bounds(value)[1]
+            )
+    unit_roundoff = 2.0 ** -53
+    gamma_8 = _up((8.0 * unit_roundoff) / (1.0 - 8.0 * unit_roundoff))
+    addition_rounding = _up(
+        gamma_8 * absolute_sum_upper + 8.0 * math.ulp(0.0)
+    )
+    exact_quadratic_lower = _down(3.0 * eigenvalue_lower)
+    return _down(exact_quadratic_lower - addition_rounding)
+
+
+def _sqrt_nonnegative(value):
+    if value[0] < 0 or value[1] < 0:
+        raise ValueError("Negative square-root interval")
+    lower = math.sqrt(value[0])
+    upper = math.sqrt(value[1])
+    return (
+        0.0 if lower == 0 else max(0.0, _down(lower)),
+        _up(upper),
+    )
+
+
+def _fit_one_float_path_enclosure(y, order, time_intervals, margin, critical):
+    """Interval-evaluate fit_one's actual binary64 operation sequence.
+
+    The interval Gauss-Jordan path requires a provably unique maximum pivot at
+    every column. If interval uncertainty cannot prove the production pivot
+    choice or its 1e-12 relative threshold, this helper fails closed.
+    """
+    n = PAIR_COUNT
+    x = [
+        ((1.0, 1.0), (float(o), float(o)), t)
+        for o, t in zip(order, time_intervals)
+    ]
+    xtx = [
+        [
+            _sum([_mul(row[j], row[k]) for row in x])
+            for k in range(3)
+        ]
+        for j in range(3)
+    ]
+    augmented = [
+        list(row) + [
+            (1.0, 1.0) if i == j else (0.0, 0.0)
+            for j in range(3)
+        ]
+        for i, row in enumerate(xtx)
+    ]
+    scale_upper = max(
+        _absolute_bounds(value)[1]
+        for row in xtx for value in row
+    )
+    if not math.isfinite(scale_upper) or scale_upper <= 0:
+        return {
+            "complete": False,
+            "reason": "Nonfinite or singular production design scale",
+        }
+
+    pivot_tolerance = FIT_ONE_PIVOT_RELATIVE_TOLERANCE * scale_upper
+    # The caller supplies ten strictly chronological normalized times with
+    # t[0] == -1 and t[9] == +1, and a balanced +/-1 order vector. Therefore:
+    # - column 0: |sum(t)| < 8, strictly below the intercept pivot 10;
+    # - column 1: |sum(order*t)| <= sum(|t|) < 10, below the order pivot 10;
+    # - column 2: only the final Schur pivot remains.
+    # This proves inverse3() selects rows 0, 1, 2 without swaps for every
+    # feasible time assignment, even if the independent interval box is wider.
+    if (sum(order) != 0 or time_intervals[0] != (-1.0, -1.0) or
+            time_intervals[-1] != (1.0, 1.0) or
+            any(lo < -1.0 or hi > 1.0 or lo > hi
+                for lo, hi in time_intervals)):
+        return {
+            "complete": False,
+            "reason": "Production fit_one fixed-pivot proof preconditions are not met",
+        }
+    for column in range(3):
+        pivot = augmented[column][column]
+        pivot_lower = _absolute_bounds(pivot)[0]
+        if pivot_lower <= pivot_tolerance:
+            return {
+                "complete": False,
+                "reason": "Production fit_one pivot interval does not clear relative tolerance",
+                "pivot_column": column,
+                "pivot_lower_abs": pivot_lower,
+                "pivot_tolerance": pivot_tolerance,
+            }
+        augmented[column] = [
+            _divide_nonzero(value, pivot)
+            for value in augmented[column]
+        ]
+        for row_index in range(3):
+            if row_index == column:
+                continue
+            factor = augmented[row_index][column]
+            augmented[row_index] = [
+                _sub(value, _mul(factor, pivot_value))
+                for value, pivot_value in zip(
+                    augmented[row_index], augmented[column]
+                )
+            ]
+    inverse = [row[3:] for row in augmented]
+
+    y_intervals = [(float(value), float(value)) for value in y]
+    xty = [
+        _sum([_mul(row[j], observation)
+              for row, observation in zip(x, y_intervals)])
+        for j in range(3)
+    ]
+    beta = [
+        _sum([_mul(value, observation)
+              for value, observation in zip(inverse_row, xty)])
+        for inverse_row in inverse
+    ]
+    residuals = [
+        _sub(observation, _sum([
+            _mul(value, coefficient)
+            for value, coefficient in zip(row, beta)
+        ]))
+        for observation, row in zip(y_intervals, x)
+    ]
+    mse = _divide_positive(
+        _sum([_square(value) for value in residuals]),
+        (float(n - 3), float(n - 3)),
+    )
+    covariance = [
+        [_mul(mse, value) for value in row]
+        for row in inverse
+    ]
+
+    log_limit = math.log1p(margin)
+    corner_envelopes = {}
+    all_inside = True
+    maximum_standard_error_upper = 0.0
+    for first_order in (-1, +1):
+        for corner_time in (-1, +1):
+            row = (
+                (1.0, 1.0),
+                (float(first_order), float(first_order)),
+                (float(corner_time), float(corner_time)),
+            )
+            estimate = _sum([
+                _mul(row[index], beta[index])
+                for index in range(3)
+            ])
+            variance = _sum([
+                _mul(_mul(row[i], covariance[i][j]), row[j])
+                for i in range(3)
+                for j in range(3)
+            ])
+            variance_lower_after_rounding = _quadratic_variance_lower_bound(
+                covariance
+            )
+            if variance_lower_after_rounding < -1e-12:
+                return {
+                    "complete": False,
+                    "reason": "Production fit_one corner variance may cross rejection threshold",
+                    "variance_interval": list(variance),
+                    "variance_lower_after_rounding_bound": variance_lower_after_rounding,
+                }
+            # The Gershgorin/rounding lower bound proves the production float
+            # result cannot cross its -1e-12 rejection threshold. For sqrt,
+            # zero is therefore a conservative lower bound after max(0, v).
+            nonnegative_variance = (
+                0.0,
+                max(0.0, variance[1]),
+            )
+            standard_error = _sqrt_nonnegative(nonnegative_variance)
+            maximum_standard_error_upper = max(
+                maximum_standard_error_upper, standard_error[1]
+            )
+            half_width = _mul((float(critical), float(critical)), standard_error)
+            ci_lower = _sub(estimate, half_width)
+            ci_upper = _add(estimate, half_width)
+            inside = ci_lower[0] > -log_limit and ci_upper[1] < log_limit
+            all_inside = all_inside and inside
+            key = "order=%+d,time=%+d" % (first_order, corner_time)
+            corner_envelopes[key] = {
+                "estimate_log_range": [estimate[0], estimate[1]],
+                "ci_log_envelope": [ci_lower[0], ci_upper[1]],
+                "inside_fixed_bound": inside,
+            }
+
+    return {
+        "complete": True,
+        "method": "outward-rounded interval evaluation of fit_one binary64 operations",
+        "pivot_tolerance_upper": pivot_tolerance,
+        "time_coefficient_interval": [beta[2][0], beta[2][1]],
+        "maximum_corner_standard_error_upper": maximum_standard_error_upper,
+        "joint_5m_corner_ci_envelope": corner_envelopes,
+        "all_corner_ci_envelopes_inside_fixed_bounds": all_inside,
+    }
 
 
 def _case_time_scaled_intervals(pair_intervals):
@@ -102,18 +365,29 @@ def _case_time_scaled_intervals(pair_intervals):
     scaled = [(-1.0, -1.0)]
     for index in range(1, PAIR_COUNT - 1):
         # t_i = 2 * (x_i - x_1) / (x_10 - x_1) - 1.
-        # The function increases with x_i and decreases with x_1 and x_10.
-        # Integer numerators/denominators avoid intermediate float rounding;
-        # one nextafter step encloses the correctly-rounded division.
-        min_denominator = last_upper - first_upper
-        min_numerator = 2 * (lower[index] - first_upper) - min_denominator
-        max_denominator = last_lower - first_lower
-        max_numerator = 2 * (upper[index] - first_lower) - max_denominator
-        if min_denominator <= 0 or max_denominator <= 0:
+        # It increases with x_i and decreases with x_1 and x_10. Enclose
+        # each integer-to-binary64 conversion as well as multiply/divide/subtract
+        # in the same operation order used by endpoint_sensitivity.
+        min_delta = lower[index] - first_upper
+        min_span = last_upper - first_upper
+        max_delta = upper[index] - first_lower
+        max_span = last_lower - first_lower
+        if min_span <= 0 or max_span <= 0:
             raise ValueError("Invalid normalized case-time denominator")
-        lo = _down(min_numerator / min_denominator)
-        hi = _up(max_numerator / max_denominator)
-        if not -1.0 <= lo <= hi <= 1.0:
+        min_ratio = _divide_positive(
+            _scale(_integer_float_interval(min_delta), 2.0),
+            _integer_float_interval(min_span),
+        )
+        max_ratio = _divide_positive(
+            _scale(_integer_float_interval(max_delta), 2.0),
+            _integer_float_interval(max_span),
+        )
+        min_time = _sub(min_ratio, (1.0, 1.0))
+        max_time = _sub(max_ratio, (1.0, 1.0))
+        # Exact chronology guarantees the normalized value is in [-1, 1].
+        lo = max(-1.0, min_time[0])
+        hi = min(1.0, max_time[1])
+        if lo > hi:
             raise ValueError("Normalized case-time interval outside [-1,1]")
         scaled.append((lo, hi))
     scaled.append((1.0, 1.0))
@@ -172,12 +446,22 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
         _sub(sum_t2, _mul(_square(sum_t), inv_n)),
         _mul(_square(sum_ot), inv_n),
     )
-    if sst[0] <= 0:
+    # fit_one() uses inverse3() with a relative pivot rejection threshold
+    # of 1e-12 * scale. For a chronological, balanced ten-row design, the
+    # first two diagonal pivots are exactly 10 and the final Schur pivot is
+    # residualized time SS; all other X'X entries have magnitude < 10.
+    # Therefore scale == 10 and the production final-pivot threshold is 1e-11.
+    fit_one_pivot_tolerance = FIT_ONE_PIVOT_RELATIVE_TOLERANCE * float(n)
+    if sst[0] <= fit_one_pivot_tolerance:
         return {
             "method": "outward-rounded interval arithmetic over an independent normalized-time box",
             "continuous_interval_enclosure_complete": False,
             "continuous_interval_bound_proved": False,
-            "reason": "Residualized time sum-of-squares lower bound is nonpositive",
+            "reason": (
+                "Residualized time sum-of-squares lower bound does not exceed "
+                "the production fit_one pivot tolerance"
+            ),
+            "fit_one_pivot_tolerance": fit_one_pivot_tolerance,
             "residualized_time_sum_squares_interval": list(sst),
             "normalized_case_time_intervals": [list(value) for value in t_intervals],
             "qualification": "DRIFT-INCONCLUSIVE",
@@ -247,26 +531,50 @@ def continuous_interval_enclosure(y, order, pair_intervals, margin,
                 "inside_fixed_bound": inside,
             }
 
+    production_float_path = _fit_one_float_path_enclosure(
+        y, order, t_intervals, margin, joint_corner_critical
+    )
+    production_float_complete = production_float_path["complete"]
+    production_corner_envelopes = (
+        production_float_path["joint_5m_corner_ci_envelope"]
+        if production_float_complete else corner_envelopes
+    )
+    production_all_inside = (
+        production_float_path["all_corner_ci_envelopes_inside_fixed_bounds"]
+        if production_float_complete else None
+    )
     return {
         "method": (
-            "outward-rounded interval arithmetic over a conservative independent "
-            "box of normalized per-case times; balanced-order OLS closed form"
+            "outward-rounded independent normalized-time box, balanced-order "
+            "OLS closed form, and production fit_one binary64 operation enclosure"
         ),
-        "continuous_interval_enclosure_complete": True,
+        "continuous_interval_enclosure_complete": production_float_complete,
         # Keep this false pending independent review of equivalence to the
         # production fit_one floating-point implementation.
         "continuous_interval_bound_proved": False,
+        "production_float_path_reason": production_float_path.get("reason"),
         "case_time_precision_proved": False,
         "normalized_case_time_intervals": [list(value) for value in t_intervals],
         "residualized_time_sum_squares_interval": list(sst),
+        "fit_one_pivot_tolerance": fit_one_pivot_tolerance,
         "residual_sum_squares_upper": sse[1],
         "time_coefficient_log_ratio_per_normalized_window_interval": list(beta_time),
         "maximum_corner_standard_error_upper": max(standard_error_uppers),
-        "joint_5m_corner_ci_envelope": corner_envelopes,
+        "closed_form_joint_5m_corner_ci_envelope": corner_envelopes,
+        "production_fit_one_float_path_enclosure": production_float_path,
+        "production_fit_one_time_coefficient_interval": production_float_path.get("time_coefficient_interval"),
+        "joint_5m_corner_ci_envelope": production_corner_envelopes,
+        "joint_5m_corner_ci_envelope_source": (
+            "production_fit_one_float_path" if production_float_complete
+            else "closed_form_only_float_path_inconclusive"
+        ),
         "fixed_margin_log": log_limit,
-        "all_corner_ci_envelopes_inside_fixed_bounds": all_inside,
+        "closed_form_all_corner_ci_envelopes_inside_fixed_bounds": all_inside,
+        "all_corner_ci_envelopes_inside_fixed_bounds": production_all_inside,
         "continuous_interval_bound_status": (
-            "ENCLOSURE_WITHIN_FIXED_BOUNDS_UNPROVEN" if all_inside
+            "INCONCLUSIVE_PRODUCTION_FLOAT_PATH" if not production_float_complete
+            else "ENCLOSURE_WITHIN_FIXED_BOUNDS_UNPROVEN"
+            if production_all_inside
             else "ENCLOSURE_EXPOSES_OUT_OF_BOUND_POSSIBILITY"
         ),
         "qualification": "DRIFT-INCONCLUSIVE",
