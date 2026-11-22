@@ -133,7 +133,7 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         )
         self.assertFalse(result["continuous_interval_enclosure_complete"])
         self.assertFalse(result["continuous_interval_bound_proved"])
-        self.assertIn("sum-of-squares lower bound is nonpositive", result["reason"])
+        self.assertIn("production fit_one pivot tolerance", result["reason"])
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
 
     def test_near_singular_box_respects_production_fit_one_pivot_threshold(self):
