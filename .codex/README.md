@@ -30,6 +30,7 @@
 - [Phase Q — Sampling Cadence Integrity](NETA_GO_ORD_SAMPLING_CADENCE_2026-11-21.md)
 - [Phase Q — Strict ORD-EVID JSON](NETA_GO_ORD_JSON_STRICTNESS_2026-11-22.md)
 - [Phase Q — Q-COR-02 Bounded Harness](NETA_GO_QCOR02_BOUNDED_HARNESS_2026-11-22.md)
+- [Phase Q — Q-COR-03 Fuzz Seed Replay](NETA_GO_QCOR03_FUZZ_SEED_REPLAY_2026-11-22.md)
 
 ## قاعده اعتبار منابع
 
