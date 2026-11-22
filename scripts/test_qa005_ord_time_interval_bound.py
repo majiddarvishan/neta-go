@@ -105,7 +105,7 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         result = continuous_interval_enclosure(
             Y, ORDER, intervals, MARGIN, CRITICAL
         )
-        self.assertTrue(result["continuous_interval_enclosure_complete"])
+        self.assertTrue(result["continuous_interval_enclosure_complete"], result)
         lower = [item["lower_pair_midpoint_twice_ns"] for item in intervals]
         upper = [item["upper_pair_midpoint_twice_ns"] for item in intervals]
 
