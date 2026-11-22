@@ -92,7 +92,7 @@ class ContinuousTimeIntervalEnclosureTests(unittest.TestCase):
         result = continuous_interval_enclosure(
             Y, ORDER, intervals, MARGIN, CRITICAL
         )
-        self.assertTrue(result["continuous_interval_enclosure_complete"])
+        self.assertTrue(result["continuous_interval_enclosure_complete"], result)
         self.assertFalse(result["continuous_interval_bound_proved"])
         self.assertEqual(result["qualification"], "DRIFT-INCONCLUSIVE")
         exact = [item["lower_pair_midpoint_twice_ns"] for item in intervals]
