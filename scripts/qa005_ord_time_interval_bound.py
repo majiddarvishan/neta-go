@@ -113,6 +113,50 @@ def _divide_nonzero(numerator, denominator):
     return _mul(numerator, reciprocal)
 
 
+def _quadratic_variance_lower_bound(covariance):
+    """Bound x'Cov*x for x in {-1,+1}^3 without interval dependency loss.
+
+    The production corner expression is a nine-term float sum. Its exact
+    pre-summation quadratic form equals x'((C+C.T)/2)x. Gershgorin bounds the
+    symmetric part from the actual covariance entries enclosed by C. A
+    gamma_8 bound plus subnormal allowance covers the eight float additions.
+    """
+    symmetric = [
+        [
+            _scale(_add(covariance[i][j], covariance[j][i]), 0.5)
+            for j in range(3)
+        ]
+        for i in range(3)
+    ]
+    eigenvalue_lower = math.inf
+    for i in range(3):
+        radius_upper = 0.0
+        for j in range(3):
+            if i == j:
+                continue
+            radius_upper = _up(
+                radius_upper + _absolute_bounds(symmetric[i][j])[1]
+            )
+        eigenvalue_lower = min(
+            eigenvalue_lower,
+            _down(symmetric[i][i][0] - radius_upper),
+        )
+
+    absolute_sum_upper = 0.0
+    for row in covariance:
+        for value in row:
+            absolute_sum_upper = _up(
+                absolute_sum_upper + _absolute_bounds(value)[1]
+            )
+    unit_roundoff = 2.0 ** -53
+    gamma_8 = _up((8.0 * unit_roundoff) / (1.0 - 8.0 * unit_roundoff))
+    addition_rounding = _up(
+        gamma_8 * absolute_sum_upper + 8.0 * math.ulp(0.0)
+    )
+    exact_quadratic_lower = _down(3.0 * eigenvalue_lower)
+    return _down(exact_quadratic_lower - addition_rounding)
+
+
 def _sqrt_nonnegative(value):
     if value[0] < 0 or value[1] < 0:
         raise ValueError("Negative square-root interval")
@@ -250,14 +294,21 @@ def _fit_one_float_path_enclosure(y, order, time_intervals, margin, critical):
                 for i in range(3)
                 for j in range(3)
             ])
-            if variance[0] < -1e-12:
+            variance_lower_after_rounding = _quadratic_variance_lower_bound(
+                covariance
+            )
+            if variance_lower_after_rounding < -1e-12:
                 return {
                     "complete": False,
                     "reason": "Production fit_one corner variance may cross rejection threshold",
                     "variance_interval": list(variance),
+                    "variance_lower_after_rounding_bound": variance_lower_after_rounding,
                 }
+            # The Gershgorin/rounding lower bound proves the production float
+            # result cannot cross its -1e-12 rejection threshold. For sqrt,
+            # zero is therefore a conservative lower bound after max(0, v).
             nonnegative_variance = (
-                max(0.0, variance[0]),
+                0.0,
                 max(0.0, variance[1]),
             )
             standard_error = _sqrt_nonnegative(nonnegative_variance)
