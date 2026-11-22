@@ -84,7 +84,7 @@ class StreamVerificationTests(unittest.TestCase):
                 '"line_index":1,"line_index":1,',
                 1,
             )
-            events.write_text("\\n".join(lines) + "\\n")
+            events.write_text("\n".join(lines) + "\n")
             with self.assertRaisesRegex(ValueError, "Duplicate JSON object key: line_index"):
                 verify_stream(log, events, launch, end, {NAME})
 
@@ -93,7 +93,7 @@ class StreamVerificationTests(unittest.TestCase):
             log, events, launch, end = self.observe(Path(d))
             lines = events.read_text().splitlines()
             lines[0] = lines[0][:-1] + ',"unused":NaN}'
-            events.write_text("\\n".join(lines) + "\\n")
+            events.write_text("\n".join(lines) + "\n")
             with self.assertRaisesRegex(ValueError, "Non-standard JSON numeric constant: NaN"):
                 verify_stream(log, events, launch, end, {NAME})
 
