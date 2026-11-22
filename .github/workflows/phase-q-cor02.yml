@@ -1,0 +1,48 @@
+name: Phase Q — Q-COR-02 bounded correctness harness
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'phase_q_cor02_test.go'
+      - '*_test.go'
+      - 'scripts/phase-q-cor02-light.sh'
+      - '.github/workflows/phase-q-cor02.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'phase_q_cor02_test.go'
+      - '*_test.go'
+      - 'scripts/phase-q-cor02-light.sh'
+      - '.github/workflows/phase-q-cor02.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-correctness:
+    name: Q-COR-02 bounded lifecycle/reconnect/race harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run deterministic bounded harness
+        run: bash scripts/phase-q-cor02-light.sh "$RUNNER_TEMP/qcor02-evidence"
+
+      - name: Upload Q-COR-02 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qcor02-bounded-evidence
+          path: ${{ runner.temp }}/qcor02-evidence
+          if-no-files-found: warn
+          retention-days: 30
